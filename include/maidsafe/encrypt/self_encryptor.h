@@ -54,8 +54,10 @@ DataMap DecryptDataMap(const Identity& parent_id, const Identity& this_id,
 
 class SelfEncryptor {
  public:
-  SelfEncryptor(DataMap& data_map, data_stores::DataBuffer<std::string>& buffer,
+  SelfEncryptor(DataMap& data_map,
                 std::function<NonEmptyString(const std::string&)> get_from_store,
+                std::function<void(const ImmutableData&)> put_to_store,
+                std::function<void(const std::string&)> delete_from_store,
                 int num_procs = 0);
   ~SelfEncryptor();
   bool Write(const char* data, uint32_t length, uint64_t position);
@@ -156,8 +158,9 @@ class SelfEncryptor {
   const uint32_t kQueueCapacity_;
   uint32_t retrievable_from_queue_;
   std::shared_ptr<byte> chunk0_raw_, chunk1_raw_;
-  data_stores::DataBuffer<std::string>& buffer_;
   std::function<NonEmptyString(const std::string&)> get_from_store_;
+  std::function<void(const ImmutableData&)> put_to_store_;
+  std::function<void(const std::string&)> delete_from_store_;
   uint64_t current_position_;
   bool prepared_for_writing_, flushed_;
   std::unique_ptr<char[]> read_cache_;

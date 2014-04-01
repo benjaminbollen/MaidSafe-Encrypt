@@ -222,8 +222,10 @@ DataMap DecryptDataMap(const Identity& parent_id, const Identity& this_id,
   return DecryptUsingVersion0(parent_id, this_id, protobuf_encrypted_data_map);
 }
 
-SelfEncryptor::SelfEncryptor(DataMap& data_map, data_stores::DataBuffer<std::string>& buffer,
+SelfEncryptor::SelfEncryptor(DataMap& data_map,
                              std::function<NonEmptyString(const std::string&)> get_from_store,
+                             std::function<void(const ImmutableData&)> put_to_store,
+                             std::function<void(const std::string&)> delete_from_store,
                              int num_procs)
     : data_map_(data_map),
       kOriginalDataMap_(data_map),
@@ -240,8 +242,9 @@ SelfEncryptor::SelfEncryptor(DataMap& data_map, data_stores::DataBuffer<std::str
       retrievable_from_queue_(0),
       chunk0_raw_(),
       chunk1_raw_(),
-      buffer_(buffer),
       get_from_store_(get_from_store),
+      put_to_store_(put_to_store),
+      delete_from_store_(delete_from_store),
       current_position_(0),
       prepared_for_writing_(false),
       flushed_(true),
@@ -256,8 +259,8 @@ SelfEncryptor::SelfEncryptor(DataMap& data_map, data_stores::DataBuffer<std::str
       data_mutex_() {
   if (data_map.self_encryption_version != EncryptionAlgorithm::kSelfEncryptionVersion0)
     BOOST_THROW_EXCEPTION(MakeError(EncryptErrors::invalid_encryption_version));
-  if (!get_from_store) {
-    LOG(kError) << "Need to have a non-null get_from_store functor.";
+  if (!get_from_store || !put_to_store || !delete_from_store) {
+    LOG(kError) << "Require non-null storage functors.";
     BOOST_THROW_EXCEPTION(MakeError(CommonErrors::invalid_parameter));
   }
   if (data_map.chunks.empty()) {
@@ -606,20 +609,14 @@ int SelfEncryptor::DecryptChunk(uint32_t chunk_num, byte* data) {
   ByteArray iv(GetNewByteArray(crypto::AES256_IVSize));
   GetPadIvKey(chunk_num, key, iv, pad, false);
   NonEmptyString content;
+
   try {
-    content = buffer_.Get(data_map_.chunks[chunk_num].hash);
+    content = get_from_store_(data_map_.chunks[chunk_num].hash);
   }
-  catch (...) {
-    LOG(kInfo) << "Failed to get data for " << HexSubstr(data_map_.chunks[chunk_num].hash)
-                << " from buffer, trying functor.";
-    try {
-      content = get_from_store_(data_map_.chunks[chunk_num].hash);
-    }
-    catch(const std::exception& e) {
-      LOG(kError) << "Failed to get data for " << HexSubstr(data_map_.chunks[chunk_num].hash)
-                  << " - " << e.what();
-      return kMissingChunk;
-    }
+  catch(const std::exception& e) {
+    LOG(kError) << "Failed to get data for " << HexSubstr(data_map_.chunks[chunk_num].hash)
+                << " - " << e.what();
+    return kMissingChunk;
   }
 
   if (content.string().empty()) {
@@ -796,7 +793,7 @@ int SelfEncryptor::EncryptChunk(uint32_t chunk_num, byte* data, uint32_t length)
 
     data_map_.chunks[chunk_num].storage_state = ChunkDetails::kPending;
     try {
-      buffer_.Store(data_map_.chunks[chunk_num].hash, NonEmptyString(chunk_content));
+      put_to_store_(ImmutableData(NonEmptyString(chunk_content)));
     }
     catch (...) {
       LOG(kError) << "Could not store " << Base64Substr(data_map_.chunks[chunk_num].hash);
@@ -1446,7 +1443,7 @@ void SelfEncryptor::DeleteChunk(uint32_t chunk_num) {
   }*/
 
   try {
-    buffer_.Delete(data_map_.chunks[chunk_num].hash);
+    delete_from_store_(data_map_.chunks[chunk_num].hash);
   }
   catch (...) {
   }
